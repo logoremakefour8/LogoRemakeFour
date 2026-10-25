@@ -1,0 +1,72 @@
+name: Build and Deploy Remote Domain
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  DOMAIN_URL: "https://www.logoremakefour.com"
+  REMOTE_PATH: "[REMOTE_PATH]"
+  DEPLOY_FOLDER: "dist"
+  WP_SITE_URL: "https://www.logoremakefour.com/[REMOTE_PATH]"
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      - name: Build frontend bundle
+        run: |
+          npm run build
+
+      - name: Prepare WordPress deploy package
+        run: |
+          mkdir -p wordpress-deploy
+          cp -R "${{ env.DEPLOY_FOLDER }}"/* wordpress-deploy/
+          find wordpress-deploy -type f \( -name "*.html" -o -name "*.js" -o -name "*.css" \) -exec sed -i \
+            -e "s#https://www.logoremakefour.com/#https://www.logoremakefour.com/[REMOTE_PATH]/#g" \
+            {} +
+
+      - name: Create deployment manifest
+        run: |
+          cat > wordpress-deploy/manifest.json <<EOF
+          {
+            "siteUrl": "https://www.logoremakefour.com/[REMOTE_PATH]",
+            "remotePath": "[REMOTE_PATH]",
+            "platform": "WordPress",
+            "hosting": ["GoDaddy", "Huge Domains"],
+            "domain": "https://www.logoremakefour.com",
+            "buildMode": "static-html-js"
+          }
+          EOF
+
+      - name: Deploy to GoDaddy / Huge Domains via SSH
+        uses: appleboy/scp-action@v0.1.0
+        with:
+          host: ${{ secrets.DOMAIN_HOST }}
+          username: ${{ secrets.DOMAIN_USERNAME }}
+          key: ${{ secrets.DOMAIN_SSH_KEY }}
+          port: ${{ secrets.DOMAIN_PORT || 22 }}
+          source: "wordpress-deploy/*"
+          target: "/public_html/${{ env.REMOTE_PATH }}"
+          strip_components: 0
+
+      - name: Confirm deployment URL
+        run: |
+          echo "Deployment complete:"
+          echo "${{ env.WP_SITE_URL }}"
