@@ -1,0 +1,131 @@
+name: Deploy Remote Neural Domain
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      report_build:
+        description: "Unique deployment report/build ID"
+        required: true
+        default: "neural-carnival"
+
+env:
+  DOMAIN_URL: "https://www.logoremakefour.com"
+  REPORT_BUILD: ${{ github.event.inputs.report_build || github.run_number }}
+  DEPLOY_ENDPOINT: "https://www.logoremakefour.com/wp-admin/deploy/${{ github.event.inputs.report_build || github.run_number }}"
+  REMOTE_HOST: "your-remote-host"
+  REMOTE_USER: "your-ssh-user"
+  REMOTE_PATH: "/public_html"
+  SERVER_WP_CONTENT: "/public_html/wp-content"
+  SERVER_WP_JSON: "/public_html/wp-json"
+  SERVER_WP_ADMIN: "/public_html/wp-admin"
+  DOMAIN_PROVIDERS: "GoDaddy, Huge Domains"
+  BANDWIDTH: "100GB"
+  NETWORK: "5G"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node dependencies
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          else
+            echo "No Node project detected; skipping npm install."
+          fi
+
+      - name: Build Simple Carnival Neural bundle
+        run: |
+          mkdir -p dist
+          mkdir -p dist/wp-content
+          mkdir -p dist/wp-json
+          mkdir -p dist/wp-admin
+          mkdir -p dist/wp-content/themes/simple-carnival-neural
+          mkdir -p dist/wp-content/plugins
+          mkdir -p dist/wp-content/uploads
+          mkdir -p dist/assets/js/pictograms
+
+          # Copy frontend assets
+          if [ -d assets ]; then
+            cp -R assets dist/
+          fi
+
+          # Copy JavaScript pictograms used by the UI
+          if [ -d js ]; then
+            cp -R js dist/
+          fi
+
+          # Copy WordPress theme files
+          if [ -d wp-content/themes ]; then
+            cp -R wp-content/themes dist/wp-content/
+          fi
+
+          # Copy WordPress plugin files
+          if [ -d wp-content/plugins ]; then
+            cp -R wp-content/plugins dist/wp-content/
+          fi
+
+          # Copy any static HTML/JSON build artifacts
+          if [ -d public ]; then
+            cp -R public dist/
+          fi
+
+          find dist -maxdepth 3 -type f | sort
+
+      - name: Set SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$REMOTE_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy build to remote WordPress domain
+        run: |
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            ./dist/ \
+            "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
+
+      - name: Validate WordPress core paths
+        run: |
+          curl -fsSL "${DOMAIN_URL}/wp-json/" || { echo "wp-json unavailable"; exit 1; }
+          curl -fsSL "${DOMAIN_URL}/wp-admin/" || { echo "wp-admin unavailable"; exit 1; }
+          curl -fsSL "${DOMAIN_URL}/wp-content/" || { echo "wp-content unavailable"; exit 1; }
+
+      - name: Complete deployment unlock
+        run: |
+          curl --fail --silent --show-error \
+            -X POST "${DEPLOY_ENDPOINT}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "status": "complete",
+              "build": "'"${REPORT_BUILD}"'",
+              "domain": "'"${DOMAIN_URL}"'",
+              "brand": "Simple Carnival Neural",
+              "registrars": ["GoDaddy", "Huge Domains"],
+              "storage": "'"${BANDWIDTH}"'",
+              "network": "'"${NETWORK}"'",
+              "html_loaded": true,
+              "javascript_pictograms": true,
+              "deployment_target": "WordPress"
+            }'
+
+      - name: Final verification
+        run: |
+          echo "Deployment complete for ${DOMAIN_URL}"
+          echo "Build report: ${REPORT_BUILD}"
+          curl -I "${DOMAIN_URL}"
+          curl -I "${DOMAIN_URL}/wp-admin/deploy/${REPORT_BUILD}"
